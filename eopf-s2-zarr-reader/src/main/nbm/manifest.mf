@@ -1,0 +1,14 @@
+Manifest-Version: 1.0
+OpenIDE-Module-Specification-Version: ${eopfreader.nbmSpecVersion}
+OpenIDE-Module-Implementation-Version: ${eopfreader.nbmImplVersion}
+AutoUpdate-Show-In-Client: true
+AutoUpdate-Essential-Module: true
+OpenIDE-Module-Java-Dependencies: Java > 11
+OpenIDE-Module-Display-Category: SNAP EOPF
+OpenIDE-Module-Dependencies: org.esa.snap.dataio.znap > 13.0
+OpenIDE-Module-Layer: eu/esa/opt/dataio/s2/layer.xml
+OpenIDE-Module-Long-Description: <p>A reader for S2 products in the ZARR format.</p>
+ <p><b>Vendor:</b> Brockmann Consult GmbH</p>
+ <p><b>Contact address:</b> Chrysanderstr. 1, 21502 Geesthacht (Germany)</p>
+ <p><b>Copyright:</b> (C) 2020 by Brockmann Consult GmbH</p>
+ <p><b>License:</b> http://www.gnu.org/licenses/gpl.html</p>

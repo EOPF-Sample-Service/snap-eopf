@@ -1,0 +1,9 @@
+{
+    "Conventions": "CF-1.7",
+    "GRIB_centre": "ecmf",
+    "GRIB_centreDescription": "European Centre for Medium-Range Weather Forecasts",
+    "GRIB_edition": 1,
+    "GRIB_subCentre": 0,
+    "history": "2025-03-11T04:14 GRIB to CDM+CF via cfgrib-0.9.10.4/ecCodes-2.34.1 with {\"source\": \"../tmp/S2A_MSIL2A_20180701T102021_N0500_R065_T32UPC_20230811T042458.SAFE/GRANULE/L2A_T32UPC_A015792_20180701T102404/AUX_DATA/AUX_CAMSRE\", \"filter_by_keys\": {}, \"encode_cf\": [\"parameter\", \"time\", \"geography\", \"vertical\"]}",
+    "institution": "European Centre for Medium-Range Weather Forecasts"
+}
