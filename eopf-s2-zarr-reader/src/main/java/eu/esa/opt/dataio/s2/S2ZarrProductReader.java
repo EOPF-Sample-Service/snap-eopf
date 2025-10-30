@@ -1,6 +1,9 @@
 package eu.esa.opt.dataio.s2;
 
 import com.bc.ceres.core.ProgressMonitor;
+import com.bc.ceres.multilevel.support.DefaultMultiLevelImage;
+import com.bc.ceres.multilevel.support.DefaultMultiLevelModel;
+import com.bc.ceres.multilevel.support.DefaultMultiLevelSource;
 import com.bc.zarr.DataType;
 import com.bc.zarr.ZarrArray;
 import com.bc.zarr.ZarrGroup;
@@ -17,6 +20,8 @@ import org.opengis.referencing.crs.CoordinateReferenceSystem;
 import org.opengis.referencing.operation.TransformException;
 
 import java.awt.*;
+import java.awt.geom.AffineTransform;
+import java.awt.image.RenderedImage;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.text.ParseException;
@@ -385,7 +390,7 @@ public class S2ZarrProductReader extends AbstractProductReader {
         return null;
     }
 
-    private Band createBand(String arrayKey, ZarrArray array, int[] additionalIndices) {
+    private Band createBand(String arrayKey, ZarrArray array, int[] additionalIndices) throws IOException {
         final DataType zarrDataType = array.getDataType();
         int productDataType = getProductDataType(zarrDataType);
         int[] shape = array.getShape();
@@ -396,10 +401,25 @@ public class S2ZarrProductReader extends AbstractProductReader {
         int height = shape[shape.length - 1];
         final Band band = new Band(arrayKey, productDataType, width, height);
         product.addBand(band);
-        final S2ZarrOpImage zarrOpImage = new S2ZarrOpImage(
+         RenderedImage sourceImage = new S2ZarrOpImage(
                 band, shape2d, chunks2d, additionalIndices, array, ResolutionLevel.MAXRES
         );
-        band.setSourceImage(zarrOpImage);
+        Map<String, Object> arrayAttributes = array.getAttributes();
+        List<Number> transformationMatrix = cast(arrayAttributes.get(TRANSFORM_ATTRIBUTES_NAME));
+        if (transformationMatrix != null) {
+            double resolution = transformationMatrix.getFirst().doubleValue();
+            double subSampling = resolution / DEFAULT_RESOLUTION;
+            final AffineTransform imageToModelTransform = new AffineTransform();
+            imageToModelTransform.scale(subSampling, subSampling);
+            final DefaultMultiLevelModel targetModel = new DefaultMultiLevelModel(
+                    imageToModelTransform, sourceImage.getWidth(), sourceImage.getHeight()
+            );
+            final DefaultMultiLevelSource targetMultiLevelSource =
+                    new DefaultMultiLevelSource(sourceImage, targetModel);
+            sourceImage = new DefaultMultiLevelImage(targetMultiLevelSource);
+        }
+        band.setSourceImage(sourceImage);
+
         return band;
     }
 

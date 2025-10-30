@@ -20,6 +20,8 @@ final class S2ZarrConstants {
     };
 
     static final List<String> RESOLUTIONS = Arrays.asList("r10m", "r20m", "r60m");
+    static final double RESOLUTION_10M = 10.0;
+    static final double DEFAULT_RESOLUTION = RESOLUTION_10M;
 
     static final String RGB_10M_IMAGE_PROFILE_NAME = "Sentinel-2 Zarr (10m)";
     static final String RGB_20M_IMAGE_PROFILE_NAME = "Sentinel-2 Zarr (20m)";
