@@ -10,14 +10,21 @@ import com.bc.zarr.ZarrGroup;
 import com.bc.zarr.storage.FileSystemStore;
 import org.esa.snap.core.dataio.AbstractProductReader;
 import org.esa.snap.core.dataio.ProductReaderPlugIn;
+import org.esa.snap.core.dataio.geocoding.*;
+import org.esa.snap.core.dataio.geocoding.forward.PixelForward;
+import org.esa.snap.core.dataio.geocoding.inverse.PixelQuadTreeInverse;
+import org.esa.snap.core.dataio.geocoding.util.RasterUtils;
 import org.esa.snap.core.datamodel.*;
 import org.esa.snap.core.datamodel.quicklooks.Quicklook;
 import org.esa.snap.core.image.ResolutionLevel;
 import org.esa.snap.core.util.ISO8601Converter;
 import org.geotools.referencing.CRS;
+import org.geotools.referencing.crs.DefaultGeographicCRS;
+import org.geotools.referencing.operation.transform.AffineTransform2D;
 import org.opengis.referencing.FactoryException;
 import org.opengis.referencing.crs.CoordinateReferenceSystem;
 import org.opengis.referencing.operation.TransformException;
+import ucar.ma2.InvalidRangeException;
 
 import java.awt.*;
 import java.awt.geom.AffineTransform;
@@ -37,7 +44,7 @@ public class S2ZarrProductReader extends AbstractProductReader {
     private Path rootPath;
     private ZarrGroup rootGroup;
     private Product product;
-    private final Map<int[], GeoCoding> geoCodings = new HashMap<>();
+    private final Map<String, GeoCoding> geoCodings = new HashMap<>();
     private ColorProvider colorProvider;
 
     /**
@@ -75,7 +82,7 @@ public class S2ZarrProductReader extends AbstractProductReader {
         product.setStartTime(sensingStart);
         product.setEndTime(sensingStop);
         product.setAutoGrouping(AUTO_GROUPING);
-        
+        initGeoCodings();
         initTiepointGridsAndBands(productAttributes);
         registerRGBProfiles();
         product.setFileLocation(rootPath.toFile());
@@ -143,77 +150,108 @@ public class S2ZarrProductReader extends AbstractProductReader {
                         e
                 );
             }
-//            }
         }
         return null;
     }
 
+    private String getBandName(String[] splitArrayKey) {
+        String origBandName = splitArrayKey[splitArrayKey.length - 1];
+        String parentFolder = splitArrayKey[splitArrayKey.length - 2];
+        String bandName;
+        if (RESOLUTIONS.contains(parentFolder)) {
+            String grandParentFolder = splitArrayKey[splitArrayKey.length - 3];
+            bandName = origBandName + "_" + parentFolder + "_" + grandParentFolder;
+        } else {
+            bandName = origBandName + "_" + parentFolder;
+        }
+        return bandName;
+    }
+
+    private void initGeoCodings() throws IOException {
+        List<String>[] coordinatePairs = new List[]{
+                new ArrayList<>(List.of("x", "y")),
+                new ArrayList<>(List.of("longitude", "latitude"))
+        };
+        for (String arrayKey : rootGroup.getArrayKeys()) {
+            try {
+                ZarrArray array = rootGroup.openArray(arrayKey);
+                Map<String, Object> arrayAttributes = array.getAttributes();
+                if (arrayAttributes.containsKey(ARRAY_DIMENSIONS_ATTRIBUTES_NAME)) {
+                    List<String> dimensionList = cast(arrayAttributes.get(ARRAY_DIMENSIONS_ATTRIBUTES_NAME));
+                    for (List<String> coordinatePair : coordinatePairs) {
+                        if (new HashSet<>(dimensionList).containsAll(coordinatePair)) {
+                            initGeoCoding(array, arrayAttributes, arrayKey, coordinatePair);
+                        }
+                    }
+                }
+            } catch (IllegalArgumentException iae) {
+                // TODO: handle this correctly
+                System.out.println(arrayKey + ": " + iae);
+            }
+        }
+    }
+
     private void initTiepointGridsAndBands(Map<String, Object> productAttributes) throws IOException {
         // only bands at the moment
-        List<String> xy = new ArrayList<>(List.of("x", "y"));
+        List<String>[] coordinatePairs = new List[]{
+                new ArrayList<>(List.of("x", "y")),
+                new ArrayList<>(List.of("longitude", "latitude"))
+        };
         for (String arrayKey : rootGroup.getArrayKeys()) {
             try {
                 ZarrArray array = rootGroup.openArray(arrayKey);
                 String[] splitArrayKey = arrayKey.split("/");
-                String parentFolder = splitArrayKey[splitArrayKey.length - 2];
                 String origBandName = splitArrayKey[splitArrayKey.length - 1];
+                String bandName = getBandName(splitArrayKey);
                 Map<?, ?> bandDescription = getBandDescription(productAttributes, origBandName);
-                String bandName;
-                if (RESOLUTIONS.contains(parentFolder)) {
-                    String grandParentFolder = splitArrayKey[splitArrayKey.length - 3];
-                    bandName = origBandName + "_" + parentFolder + "_" + grandParentFolder;
-                } else {
-                    bandName = origBandName + "_" + parentFolder;
-                }
-
                 Map<String, Object> arrayAttributes = array.getAttributes();
                 if (arrayAttributes.containsKey(ARRAY_DIMENSIONS_ATTRIBUTES_NAME)) {
                     List<String> dimensionList = cast(arrayAttributes.get(ARRAY_DIMENSIONS_ATTRIBUTES_NAME));
-                    if (new HashSet<>(dimensionList).containsAll(xy)) {
-                        int[] shape = array.getShape();
-                        Band band;
-                        if (shape.length == 2) {
-                            band = createBand(bandName, array, new int[0]);
-                            applyBandAttributes(band, bandDescription, arrayAttributes);
-                            setGeoCoding(band, array, arrayAttributes);
-                            addFlagCoding(band, arrayAttributes);
-                            addIndexCoding(band);
-                            addMasks(band);
-                        } else {
-                            String[][] bandNameParts = BAND_NAME_PARTS.get(origBandName);
-                            int numDims = shape.length - 2;
-                            int [] additionalIndexes = new int[numDims];
-                            ArrayList<Band> resultingBands = new ArrayList<>();
-                            while (additionalIndexes[0] < shape[0]) {
-                                StringBuilder subDimBandNameBuilder = new StringBuilder();
-                                for (int i = 0; i < numDims; i++) {
-                                    subDimBandNameBuilder.append(bandNameParts[i][additionalIndexes[i]]).append("_");
-                                }
-                                String subDimBandName = subDimBandNameBuilder.toString();
-                                subDimBandName += BASE_NAMES.getOrDefault(origBandName, bandName);
-                                band = createBand(subDimBandName, array, additionalIndexes.clone());
+                    for (List<String> coordinatePair : coordinatePairs) {
+                        if (new HashSet<>(dimensionList).containsAll(coordinatePair)) {
+                            int[] shape = array.getShape();
+                            Band band;
+                            if (shape.length == 2) {
+                                band = createBand(bandName, array, new int[0]);
                                 applyBandAttributes(band, bandDescription, arrayAttributes);
-                                setGeoCoding(band, array, arrayAttributes);
                                 addFlagCoding(band, arrayAttributes);
                                 addIndexCoding(band);
                                 addMasks(band);
-                                resultingBands.add(band);
-                                int currentDim = numDims - 1;
-                                while (currentDim >= 0) {
-                                    additionalIndexes[currentDim]++;
-                                    if (currentDim > 0) {
-                                        additionalIndexes[currentDim] %= shape[currentDim];
+                            } else {
+                                String[][] bandNameParts = BAND_NAME_PARTS.get(origBandName);
+                                int numDims = shape.length - 2;
+                                int [] additionalIndexes = new int[numDims];
+                                ArrayList<Band> resultingBands = new ArrayList<>();
+                                while (additionalIndexes[0] < shape[0]) {
+                                    StringBuilder subDimBandNameBuilder = new StringBuilder();
+                                    for (int i = 0; i < numDims; i++) {
+                                        subDimBandNameBuilder.append(bandNameParts[i][additionalIndexes[i]]).append("_");
                                     }
-                                    if (additionalIndexes[currentDim] > 0) {
-                                        break;
+                                    String subDimBandName = subDimBandNameBuilder.toString();
+                                    subDimBandName += BASE_NAMES.getOrDefault(origBandName, bandName);
+                                    band = createBand(subDimBandName, array, additionalIndexes.clone());
+                                    applyBandAttributes(band, bandDescription, arrayAttributes);
+                                    addFlagCoding(band, arrayAttributes);
+                                    addIndexCoding(band);
+                                    addMasks(band);
+                                    resultingBands.add(band);
+                                    int currentDim = numDims - 1;
+                                    while (currentDim >= 0) {
+                                        additionalIndexes[currentDim]++;
+                                        if (currentDim > 0) {
+                                            additionalIndexes[currentDim] %= shape[currentDim];
+                                        }
+                                        if (additionalIndexes[currentDim] > 0) {
+                                            break;
+                                        }
+                                        currentDim--;
                                     }
-                                    currentDim--;
                                 }
-                            }
-                            if (bandName.contains(QUICKLOOK_BAND_NAME)) {
-                                Band[] quicklookBands = resultingBands.toArray(new Band[0]);
-                                Quicklook quicklook = new Quicklook(product, bandName, quicklookBands);
-                                product.getQuicklookGroup().add(quicklook);
+                                if (bandName.contains(QUICKLOOK_BAND_NAME)) {
+                                    Band[] quicklookBands = resultingBands.toArray(new Band[0]);
+                                    Quicklook quicklook = new Quicklook(product, bandName, quicklookBands);
+                                    product.getQuicklookGroup().add(quicklook);
+                                }
                             }
                         }
                     }
@@ -225,10 +263,14 @@ public class S2ZarrProductReader extends AbstractProductReader {
         }
     }
 
-    private void setGeoCoding(Band band, ZarrArray array, Map<String, Object> arrayAttributes) {
+    private void initGeoCoding(
+            ZarrArray array, Map<String, Object> arrayAttributes,
+            String arrayKey, List<String> coordinatePair
+    ) throws IOException {
         int[] arrayShape = array.getShape();
         int[] shape = new int[]{arrayShape[arrayShape.length - 2], arrayShape[arrayShape.length - 1]};
-        if (!geoCodings.containsKey(shape)) {
+        String shapeString = shape[0] + "_" + shape[1];
+        if (!geoCodings.containsKey(shapeString)) {
             String crs_wkt = cast(getAttributeFromArrayAttributes(arrayAttributes, WKT_ATTRIBUTES_NAME));
             ArrayList<Number> transform = cast(getAttributeFromArrayAttributes(
                     arrayAttributes, TRANSFORM_ATTRIBUTES_NAME)
@@ -243,18 +285,113 @@ public class S2ZarrProductReader extends AbstractProductReader {
                     CrsGeoCoding crsGeoCoding = new CrsGeoCoding(
                             crs, shape[0], shape[1], easting, northing, pixelSizeX, pixelSizeY
                     );
-                    geoCodings.put(shape, crsGeoCoding);
+                    geoCodings.put(shapeString, crsGeoCoding);
                 } catch (FactoryException | TransformException e) {
                     // TODO handling
                 }
+            } else if (coordinatePair.contains("x")) {
+                try {
+                    Map<String, Object> stac_map = cast(rootGroup.getAttributes().get(STAC_DISCOVERY_ATTRIBUTES_NAME));
+                    Map<String, Object> propertiesMap = cast(stac_map.get(PROPERTIES_ATTRIBUTES_NAME));
+                    int epsg_code = cast(propertiesMap.get("proj:epsg"));
+                    CoordinateReferenceSystem crs = CRS.decode("EPSG:" + epsg_code);
+                    String newKey = arrayKey.substring(0,arrayKey.lastIndexOf("/"));
+                    ProductData xCoordData = getProductDataFromKey(newKey, "x");
+                    int firstX = xCoordData.getElemIntAt(0);
+                    int secondX = xCoordData.getElemIntAt(1);
+                    int pixelSizeX = secondX - firstX;
+                    int easting = firstX - (pixelSizeX / 2);
+                    ProductData yCoordData = getProductDataFromKey(newKey, "y");
+                    int firstY = yCoordData.getElemIntAt(0);
+                    int secondY = yCoordData.getElemIntAt(1);
+                    int pixelSizeY = firstY - secondY;
+                    int northing = firstY - (pixelSizeY / 2);
+                    try {
+                        CrsGeoCoding crsGeoCoding = new CrsGeoCoding(
+                                crs, shape[0], shape[1], easting, northing, pixelSizeX, pixelSizeY
+                        );
+                        geoCodings.put(shapeString, crsGeoCoding);
+                    } catch (TransformException e) {
+                        // TODO handle
+                    }
+                } catch (FactoryException fe) {
+                    // TODO handle
+                }
+            } else {
+                String newKey = arrayKey.substring(0,arrayKey.lastIndexOf("/"));
+                Band[] coordinateBands = new Band[2];
+                double[][] coordinateValues = new double[2][];
+                int numCoordinates;
+                for (int k = 0; k < coordinatePair.size(); k++) {
+                    int count = 0;
+                    String coordinateName = coordinatePair.get(k);
+                    String coordKey = newKey + "/" + coordinateName;
+                    ZarrArray coord = rootGroup.openArray(coordKey);
+                    try {
+                        final DataType zarrDataType = coord.getDataType();
+                        int productDataType = getProductDataType(zarrDataType);
+                        numCoordinates = coord.getShape()[0];
+                        coordinateValues[k] = new double[numCoordinates * numCoordinates];
+                        ProductData productData = ProductData.createInstance(productDataType, numCoordinates);
+                        coord.read(productData.getElems(), new int[]{numCoordinates});
+                        String bandName = getBandName(coordKey.split("/"));
+                        Band coordBand = new Band(bandName, productDataType, numCoordinates, numCoordinates);
+                        coordBand.ensureRasterData();
+                        for (int i = 0; i < numCoordinates; i++) {
+                            for (int j = 0; j < numCoordinates; j++) {
+                                    if (k == 0) {
+                                        coordBand.setPixelDouble(i, j, productData.getElemDoubleAt(j));
+                                        coordinateValues[k][count++] = productData.getElemDoubleAt(j);
+                                    } else {
+                                        coordBand.setPixelDouble(i, j, productData.getElemDoubleAt(i));
+                                        coordinateValues[k][count++] = productData.getElemDoubleAt(i);
+                                    }
+                            }
+                        }
+                        coordinateBands[k] = coordBand;
+                    } catch (InvalidRangeException e) {
+                        // TODO handle
+                        throw new RuntimeException(e);
+                    }
+                }
+                double resolutionInKm = RasterUtils.computeResolutionInKm(
+                        coordinateValues[0], coordinateValues[1], shape[0], shape[1]
+                );
+                CoordinateReferenceSystem crs = DefaultGeographicCRS.WGS84;
+                GeoRaster geoRaster = new GeoRaster(
+                        coordinateValues[0], coordinateValues[1],
+                        coordinateBands[0].getName(), coordinateBands[1].getName(),
+                        shape[0], shape[1], resolutionInKm
+                );
+                final ForwardCoding forwardCoding = ComponentFactory.getForward(PixelForward.KEY);
+                final InverseCoding inverseCoding = ComponentFactory.getInverse(PixelQuadTreeInverse.KEY);
+                ComponentGeoCoding geoCoding = new ComponentGeoCoding(geoRaster, forwardCoding, inverseCoding, crs);
+                geoCoding.setGeoCRS(DefaultGeographicCRS.WGS84);
+                geoCoding.initialize();
+                geoCodings.put(shapeString, geoCoding);
             }
-        }
-        if (geoCodings.containsKey(shape)) {
-            band.setGeoCoding(geoCodings.get(shape));
         }
     }
 
-    private void addFlagCoding(Band band, Map<String, Object> attributes) {
+    private ProductData getProductDataFromKey(String newKey, String coordName) {
+        String coordKey = newKey + "/" + coordName;
+        ZarrArray coord;
+        try {
+            coord = rootGroup.openArray(coordKey);
+            final DataType zarrDataType = coord.getDataType();
+            int productDataType = getProductDataType(zarrDataType);
+            int numCoordinates = coord.getShape()[0];
+            ProductData productData = ProductData.createInstance(productDataType, numCoordinates);
+            coord.read(productData.getElems(), new int[]{numCoordinates});
+            return productData;
+        } catch (IOException | InvalidRangeException e) {
+            // TODO handle exception
+        }
+        return null;
+    }
+
+
+        private void addFlagCoding(Band band, Map<String, Object> attributes) {
         final String rasterName = band.getName();
         final List<String> flagMeanings = cast(attributes.get(FLAG_MEANINGS));
         if (flagMeanings != null) {
@@ -401,26 +538,58 @@ public class S2ZarrProductReader extends AbstractProductReader {
         int height = shape[shape.length - 1];
         final Band band = new Band(arrayKey, productDataType, width, height);
         product.addBand(band);
-         RenderedImage sourceImage = new S2ZarrOpImage(
-                band, shape2d, chunks2d, additionalIndices, array, ResolutionLevel.MAXRES
-        );
-        Map<String, Object> arrayAttributes = array.getAttributes();
-        List<Number> transformationMatrix = cast(arrayAttributes.get(TRANSFORM_ATTRIBUTES_NAME));
-        if (transformationMatrix != null) {
-            double resolution = transformationMatrix.getFirst().doubleValue();
-            double subSampling = resolution / DEFAULT_RESOLUTION;
-            final AffineTransform imageToModelTransform = new AffineTransform();
-            imageToModelTransform.scale(subSampling, subSampling);
-            final DefaultMultiLevelModel targetModel = new DefaultMultiLevelModel(
-                    imageToModelTransform, sourceImage.getWidth(), sourceImage.getHeight()
+        String shapeString = shape2d[0] + "_" + shape2d[1];
+        if (geoCodings.containsKey(shapeString)) {
+            GeoCoding geoCoding = geoCodings.get(shapeString);
+            band.setGeoCoding(geoCoding);
+            RenderedImage sourceImage = new S2ZarrOpImage(
+                    band, shape2d, chunks2d, additionalIndices, array, ResolutionLevel.MAXRES
             );
-            final DefaultMultiLevelSource targetMultiLevelSource =
-                    new DefaultMultiLevelSource(sourceImage, targetModel);
-            sourceImage = new DefaultMultiLevelImage(targetMultiLevelSource);
+            if (geoCoding instanceof CrsGeoCoding) {
+                AffineTransform2D i2m = (AffineTransform2D) geoCoding.getImageToMapTransform();
+                double scaleX = i2m.getScaleX();
+                double scaleY = i2m.getScaleY();
+                double transformX = i2m.getTranslateX();
+                double transformY = i2m.getTranslateY();
+                double translateX = ((transformX + Math.abs(0.5 * scaleX)) - getReferenceOffset("x")) / scaleX;
+                double translateY = (getReferenceOffset("y") - (transformY - Math.abs(0.5 * scaleY))) / scaleY;
+                final AffineTransform imageToModelTransform = new AffineTransform();
+                imageToModelTransform.scale(Math.abs(scaleX), Math.abs(scaleY));
+                if (!Double.isNaN(translateX) && !Double.isNaN(translateY)) {
+                    imageToModelTransform.translate(translateX, translateY);
+                }
+                final DefaultMultiLevelModel targetModel = new DefaultMultiLevelModel(
+                        imageToModelTransform, sourceImage.getWidth(), sourceImage.getHeight()
+                );
+                final DefaultMultiLevelSource targetMultiLevelSource =
+                        new DefaultMultiLevelSource(sourceImage, targetModel);
+                sourceImage = new DefaultMultiLevelImage(targetMultiLevelSource);
+            }
+            band.setSourceImage(sourceImage);
         }
-        band.setSourceImage(sourceImage);
-
         return band;
+    }
+
+    private double getReferenceOffset(String coordinate) {
+        for (GeoCoding geoCoding : geoCodings.values()) {
+            if (geoCoding instanceof CrsGeoCoding) {
+                AffineTransform2D i2m = (AffineTransform2D) geoCoding.getImageToMapTransform();
+                double resolution;
+                if (coordinate.equals("x")) {
+                    resolution = Math.abs(i2m.getScaleX());
+                } else {
+                    resolution = Math.abs(i2m.getScaleY());
+                }
+                if (resolution - DEFAULT_RESOLUTION < 1e-8) {
+                    if (coordinate.equals("x")) {
+                        return i2m.getTranslateX() + 0.5 * resolution;
+                    } else {
+                        return i2m.getTranslateY() - 0.5 * resolution;
+                    }
+                }
+            }
+        }
+        return Double.NaN;
     }
 
     void applyBandAttributes(Band band, Map<?, ?> bandDescription, Map<String, Object> arrayAttributes) {

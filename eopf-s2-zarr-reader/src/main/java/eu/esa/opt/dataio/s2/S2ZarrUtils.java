@@ -40,6 +40,8 @@ public class S2ZarrUtils {
             return ProductData.TYPE_INT32;
         } else if (zarrDataType == DataType.u4) {
             return ProductData.TYPE_UINT32;
+        } else if (zarrDataType == DataType.i8) {
+            return ProductData.TYPE_INT64;
         } else {
             throw new IllegalStateException();
         }
