@@ -82,6 +82,7 @@ public class S2ZarrProductReader extends AbstractProductReader {
         product.setStartTime(sensingStart);
         product.setEndTime(sensingStop);
         product.setAutoGrouping(AUTO_GROUPING);
+        readMetadata();
         setSceneGeoCoding();
         initGeoCodings();
         initTiepointGridsAndBands(productAttributes);
@@ -166,6 +167,45 @@ public class S2ZarrProductReader extends AbstractProductReader {
             bandName = origBandName + "_" + parentFolder;
         }
         return bandName;
+    }
+
+    private void readMetadata() throws IOException {
+        Map<String, Object> rootAttributes = rootGroup.getAttributes();
+        addToMetadataElement(product.getMetadataRoot(), rootAttributes);
+    }
+
+    private void addToMetadataElement(MetadataElement element, Map<String, Object> attributes) {
+        for (Map.Entry<String, Object> attribute : attributes.entrySet()) {
+            if (attribute.getValue() instanceof Map) {
+                MetadataElement newElement = new MetadataElement(attribute.getKey());
+                addToMetadataElement(newElement, (Map<String, Object>) attribute.getValue());
+                element.addElement(newElement);
+            } else if (attribute.getValue() instanceof ArrayList<?>) {
+                ArrayList<?> valueList = (ArrayList<?>) attribute.getValue();
+                HashMap<String, Object> valueMap = new HashMap<>();
+                for (int i = 0; i < valueList.size(); i++) {
+                    valueMap.put("" + i, valueList.get(i));
+                }
+                MetadataElement newElement = new MetadataElement(attribute.getKey());
+                addToMetadataElement(newElement, valueMap);
+                element.addElement(newElement);
+            } else {
+                MetadataAttribute metadataAttribute = createMetadataAttribute(attribute.getKey(), attribute.getValue());
+                if (metadataAttribute != null) {
+                    element.addAttribute(metadataAttribute);
+                }
+            }
+        }
+    }
+
+    private MetadataAttribute createMetadataAttribute(String key, Object attributeValue) {
+        ProductData productData;
+        if (attributeValue instanceof ArrayList<?>) {
+            productData = ProductData.createInstance(attributeValue.toString());
+        } else {
+            productData = ProductData.createInstance(ProductData.TYPE_ASCII, attributeValue.toString());
+        }
+        return new MetadataAttribute(key, productData, false);
     }
 
     private void initGeoCodings() throws IOException {
