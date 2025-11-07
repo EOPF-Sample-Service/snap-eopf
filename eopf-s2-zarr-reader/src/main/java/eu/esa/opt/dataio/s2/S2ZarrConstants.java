@@ -20,8 +20,6 @@ final class S2ZarrConstants {
     };
 
     static final List<String> RESOLUTIONS = Arrays.asList("r10m", "r20m", "r60m");
-    static final double RESOLUTION_10M = 10.0;
-    static final double DEFAULT_RESOLUTION = RESOLUTION_10M;
 
     static final String RGB_10M_IMAGE_PROFILE_NAME = "Sentinel-2 Zarr (10m)";
     static final String RGB_20M_IMAGE_PROFILE_NAME = "Sentinel-2 Zarr (20m)";
@@ -30,6 +28,8 @@ final class S2ZarrConstants {
     static final String STAC_DISCOVERY_ATTRIBUTES_NAME = "stac_discovery";
     static final String PROPERTIES_ATTRIBUTES_NAME = "properties";
     static final String ARRAY_DIMENSIONS_ATTRIBUTES_NAME = "_ARRAY_DIMENSIONS";
+    static final String BBOX_ATTRIBUTES_NAME = "proj:bbox";
+    static final String EPSG_ATTRIBUTES_NAME = "proj:epsg";
     static final String WKT_ATTRIBUTES_NAME = "proj:wkt2";
     static final String TRANSFORM_ATTRIBUTES_NAME = "proj:transform";
     static final String OTHER_METADATA_ATTRIBUTES_NAME = "other_metadata";

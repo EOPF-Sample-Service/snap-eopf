@@ -82,6 +82,7 @@ public class S2ZarrProductReader extends AbstractProductReader {
         product.setStartTime(sensingStart);
         product.setEndTime(sensingStop);
         product.setAutoGrouping(AUTO_GROUPING);
+        setSceneGeoCoding();
         initGeoCodings();
         initTiepointGridsAndBands(productAttributes);
         registerRGBProfiles();
@@ -188,6 +189,25 @@ public class S2ZarrProductReader extends AbstractProductReader {
                 // TODO: handle this correctly
                 System.out.println(arrayKey + ": " + iae);
             }
+        }
+    }
+
+    private void setSceneGeoCoding() {
+        Map<String, Object> stac_map;
+        try {
+            stac_map = S2ZarrUtils.cast(rootGroup.getAttributes().get(S2ZarrConstants.STAC_DISCOVERY_ATTRIBUTES_NAME));
+            Map<String, Object> propertiesMap = cast(stac_map.get(PROPERTIES_ATTRIBUTES_NAME));
+            int epsg_code = cast(propertiesMap.get(EPSG_ATTRIBUTES_NAME));
+            CoordinateReferenceSystem crs = CRS.decode("EPSG:" + epsg_code);
+            ArrayList<Double> bbox  = cast(propertiesMap.get(BBOX_ATTRIBUTES_NAME));
+            double easting = bbox.get(0);
+            double northing = bbox.get(3);
+            GeoCoding geoCoding = new CrsGeoCoding(
+                    crs, 109800, 109800, easting, northing, 1.0, 1.0, 0.0, 0.0
+            );
+            product.setSceneGeoCoding(geoCoding);
+        } catch (IOException | FactoryException | TransformException e) {
+            // TODO handle
         }
     }
 
@@ -305,7 +325,7 @@ public class S2ZarrProductReader extends AbstractProductReader {
                     int firstY = yCoordData.getElemIntAt(0);
                     int secondY = yCoordData.getElemIntAt(1);
                     int pixelSizeY = firstY - secondY;
-                    int northing = firstY - (pixelSizeY / 2);
+                    int northing = firstY + (pixelSizeY / 2);
                     try {
                         CrsGeoCoding crsGeoCoding = new CrsGeoCoding(
                                 crs, shape[0], shape[1], easting, northing, pixelSizeX, pixelSizeY
@@ -527,7 +547,7 @@ public class S2ZarrProductReader extends AbstractProductReader {
         return null;
     }
 
-    private Band createBand(String arrayKey, ZarrArray array, int[] additionalIndices) throws IOException {
+    private Band createBand(String arrayKey, ZarrArray array, int[] additionalIndices) {
         final DataType zarrDataType = array.getDataType();
         int productDataType = getProductDataType(zarrDataType);
         int[] shape = array.getShape();
@@ -551,10 +571,10 @@ public class S2ZarrProductReader extends AbstractProductReader {
                 double scaleY = i2m.getScaleY();
                 double transformX = i2m.getTranslateX();
                 double transformY = i2m.getTranslateY();
-                double translateX = ((transformX + Math.abs(0.5 * scaleX)) - getReferenceOffset("x")) / scaleX;
-                double translateY = (getReferenceOffset("y") - (transformY - Math.abs(0.5 * scaleY))) / scaleY;
+                double translateX = (transformX + Math.abs(0.5 * scaleX)) / scaleX;
+                double translateY = (transformY - Math.abs(0.5 * scaleY)) / scaleY;
                 final AffineTransform imageToModelTransform = new AffineTransform();
-                imageToModelTransform.scale(Math.abs(scaleX), Math.abs(scaleY));
+                imageToModelTransform.scale(scaleX, scaleY);
                 if (!Double.isNaN(translateX) && !Double.isNaN(translateY)) {
                     imageToModelTransform.translate(translateX, translateY);
                 }
@@ -564,32 +584,16 @@ public class S2ZarrProductReader extends AbstractProductReader {
                 final DefaultMultiLevelSource targetMultiLevelSource =
                         new DefaultMultiLevelSource(sourceImage, targetModel);
                 sourceImage = new DefaultMultiLevelImage(targetMultiLevelSource);
+            } else {
+                GeoCoding referenceGeoCoding = product.getSceneGeoCoding();
+                S2ZarrGeoCodingSceneTransformProvider sceneTransformProvider =
+                        new S2ZarrGeoCodingSceneTransformProvider(referenceGeoCoding, geoCoding);
+                band.setModelToSceneTransform(sceneTransformProvider.getModelToSceneTransform());
+                band.setSceneToModelTransform(sceneTransformProvider.getSceneToModelTransform());
             }
             band.setSourceImage(sourceImage);
         }
         return band;
-    }
-
-    private double getReferenceOffset(String coordinate) {
-        for (GeoCoding geoCoding : geoCodings.values()) {
-            if (geoCoding instanceof CrsGeoCoding) {
-                AffineTransform2D i2m = (AffineTransform2D) geoCoding.getImageToMapTransform();
-                double resolution;
-                if (coordinate.equals("x")) {
-                    resolution = Math.abs(i2m.getScaleX());
-                } else {
-                    resolution = Math.abs(i2m.getScaleY());
-                }
-                if (resolution - DEFAULT_RESOLUTION < 1e-8) {
-                    if (coordinate.equals("x")) {
-                        return i2m.getTranslateX() + 0.5 * resolution;
-                    } else {
-                        return i2m.getTranslateY() - 0.5 * resolution;
-                    }
-                }
-            }
-        }
-        return Double.NaN;
     }
 
     void applyBandAttributes(Band band, Map<?, ?> bandDescription, Map<String, Object> arrayAttributes) {
