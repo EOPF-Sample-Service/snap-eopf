@@ -191,20 +191,13 @@ public class S2ZarrProductReader extends AbstractProductReader {
                 element.addElement(newElement);
             } else {
                 MetadataAttribute metadataAttribute = createMetadataAttribute(attribute.getKey(), attribute.getValue());
-                if (metadataAttribute != null) {
-                    element.addAttribute(metadataAttribute);
-                }
+                element.addAttribute(metadataAttribute);
             }
         }
     }
 
     private MetadataAttribute createMetadataAttribute(String key, Object attributeValue) {
-        ProductData productData;
-        if (attributeValue instanceof ArrayList<?>) {
-            productData = ProductData.createInstance(attributeValue.toString());
-        } else {
-            productData = ProductData.createInstance(ProductData.TYPE_ASCII, attributeValue.toString());
-        }
+        ProductData productData = ProductData.createInstance(ProductData.TYPE_ASCII, attributeValue.toString());
         return new MetadataAttribute(key, productData, false);
     }
 
