@@ -175,14 +175,27 @@ public class S2ZarrProductReader extends AbstractProductReader {
     }
 
     private void addToMetadataElement(MetadataElement element, Map<String, Object> attributes) {
+        Map<String, String> metadataSplitter = Map.of(
+                "spectral_response_values", " ", "product_quality_status", ",",
+                "list of used processing parameters file names", ","
+        );
         for (Map.Entry<String, Object> attribute : attributes.entrySet()) {
-            if (attribute.getValue() instanceof Map) {
+            if (metadataSplitter.containsKey(attribute.getKey())) {
+                String[] valueList = attribute.getValue().toString().split(metadataSplitter.get(attribute.getKey()));
+                Map<String, Object> valueMap = new LinkedHashMap<>();
+                for (int i = 0; i < valueList.length; i++) {
+                    valueMap.put("" + i, valueList[i]);
+                }
+                MetadataElement newElement = new MetadataElement(attribute.getKey());
+                addToMetadataElement(newElement, valueMap);
+                element.addElement(newElement);
+            } else if (attribute.getValue() instanceof Map) {
                 MetadataElement newElement = new MetadataElement(attribute.getKey());
                 addToMetadataElement(newElement, (Map<String, Object>) attribute.getValue());
                 element.addElement(newElement);
             } else if (attribute.getValue() instanceof ArrayList<?>) {
                 ArrayList<?> valueList = (ArrayList<?>) attribute.getValue();
-                HashMap<String, Object> valueMap = new HashMap<>();
+                HashMap<String, Object> valueMap = new LinkedHashMap<>();
                 for (int i = 0; i < valueList.size(); i++) {
                     valueMap.put("" + i, valueList.get(i));
                 }
