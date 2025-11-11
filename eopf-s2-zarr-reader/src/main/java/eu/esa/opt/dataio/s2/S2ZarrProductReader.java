@@ -470,6 +470,7 @@ public class S2ZarrProductReader extends AbstractProductReader {
                         }
                     }
                     coordinateBands[k] = coordBand;
+                    product.addBand(coordBand);
                 }
                 double resolutionInKm = RasterUtils.computeResolutionInKm(
                         coordinateValues[0], coordinateValues[1], shape[0], shape[1]
