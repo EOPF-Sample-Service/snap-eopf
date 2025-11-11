@@ -18,6 +18,11 @@ final class S2ZarrConstants {
             File.class,
             String.class
     };
+    static Map<String, String[]> DIMENSION_NAMES = Map.of(
+            "angle", new String[]{"zenith", "azimuth"},
+            "band",
+            new String[]{"b01", "b02", "b03", "b04", "b05", "b06", "b07", "b08", "b8a", "b09", "b10", "b11", "b12"}
+    );
 
     static final List<String> RESOLUTIONS = Arrays.asList("r10m", "r20m", "r60m");
 

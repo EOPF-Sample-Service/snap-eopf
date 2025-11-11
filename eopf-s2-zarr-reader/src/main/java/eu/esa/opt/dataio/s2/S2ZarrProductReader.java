@@ -4,6 +4,7 @@ import com.bc.ceres.core.ProgressMonitor;
 import com.bc.ceres.multilevel.support.DefaultMultiLevelImage;
 import com.bc.ceres.multilevel.support.DefaultMultiLevelModel;
 import com.bc.ceres.multilevel.support.DefaultMultiLevelSource;
+import com.bc.zarr.ArrayParams;
 import com.bc.zarr.DataType;
 import com.bc.zarr.ZarrArray;
 import com.bc.zarr.ZarrGroup;
@@ -85,7 +86,7 @@ public class S2ZarrProductReader extends AbstractProductReader {
         readMetadata();
         setSceneGeoCoding();
         initGeoCodings();
-        initTiepointGridsAndBands(productAttributes);
+        readArraysAsBandsOrMetadata(productAttributes);
         registerRGBProfiles();
         product.setFileLocation(rootPath.toFile());
         product.setProductReader(this);
@@ -257,8 +258,8 @@ public class S2ZarrProductReader extends AbstractProductReader {
         }
     }
 
-    private void initTiepointGridsAndBands(Map<String, Object> productAttributes) throws IOException {
-        // only bands at the moment
+    private void readArraysAsBandsOrMetadata(Map<String, Object> productAttributes) throws IOException {
+        ArrayList<String> notMetadata = new ArrayList<>(List.of("x", "y", "longitude", "latitude", "detector", "band"));
         List<String>[] coordinatePairs = new List[]{
                 new ArrayList<>(List.of("x", "y")),
                 new ArrayList<>(List.of("longitude", "latitude"))
@@ -271,57 +272,115 @@ public class S2ZarrProductReader extends AbstractProductReader {
                 String bandName = getBandName(splitArrayKey);
                 Map<?, ?> bandDescription = getBandDescription(productAttributes, origBandName);
                 Map<String, Object> arrayAttributes = array.getAttributes();
-                if (arrayAttributes.containsKey(ARRAY_DIMENSIONS_ATTRIBUTES_NAME)) {
-                    List<String> dimensionList = cast(arrayAttributes.get(ARRAY_DIMENSIONS_ATTRIBUTES_NAME));
-                    for (List<String> coordinatePair : coordinatePairs) {
-                        if (new HashSet<>(dimensionList).containsAll(coordinatePair)) {
-                            int[] shape = array.getShape();
-                            Band band;
-                            if (shape.length == 2) {
-                                band = createBand(bandName, array, new int[0]);
+                boolean bandSet = false;
+                List<String> dimensionList = cast(arrayAttributes.get(ARRAY_DIMENSIONS_ATTRIBUTES_NAME));
+                for (List<String> coordinatePair : coordinatePairs) {
+                    if (dimensionList != null && new HashSet<>(dimensionList).containsAll(coordinatePair)) {
+                        int[] shape = array.getShape();
+                        Band band;
+                        if (shape.length == 2) {
+                            band = createBand(bandName, array, new int[0]);
+                            applyBandAttributes(band, bandDescription, arrayAttributes);
+                            addFlagCoding(band, arrayAttributes);
+                            addIndexCoding(band);
+                            addMasks(band);
+                            bandSet = true;
+                        } else {
+                            String[][] bandNameParts = BAND_NAME_PARTS.get(origBandName);
+                            int numDims = shape.length - 2;
+                            int[] additionalIndexes = new int[numDims];
+                            ArrayList<Band> resultingBands = new ArrayList<>();
+                            while (additionalIndexes[0] < shape[0]) {
+                                StringBuilder subDimBandNameBuilder = new StringBuilder();
+                                for (int i = 0; i < numDims; i++) {
+                                    subDimBandNameBuilder.append(bandNameParts[i][additionalIndexes[i]]).append("_");
+                                }
+                                String subDimBandName = subDimBandNameBuilder.toString();
+                                subDimBandName += BASE_NAMES.getOrDefault(origBandName, bandName);
+                                band = createBand(subDimBandName, array, additionalIndexes.clone());
                                 applyBandAttributes(band, bandDescription, arrayAttributes);
                                 addFlagCoding(band, arrayAttributes);
                                 addIndexCoding(band);
                                 addMasks(band);
-                            } else {
-                                String[][] bandNameParts = BAND_NAME_PARTS.get(origBandName);
-                                int numDims = shape.length - 2;
-                                int [] additionalIndexes = new int[numDims];
-                                ArrayList<Band> resultingBands = new ArrayList<>();
-                                while (additionalIndexes[0] < shape[0]) {
-                                    StringBuilder subDimBandNameBuilder = new StringBuilder();
-                                    for (int i = 0; i < numDims; i++) {
-                                        subDimBandNameBuilder.append(bandNameParts[i][additionalIndexes[i]]).append("_");
+                                resultingBands.add(band);
+                                int currentDim = numDims - 1;
+                                while (currentDim >= 0) {
+                                    additionalIndexes[currentDim]++;
+                                    if (currentDim > 0) {
+                                        additionalIndexes[currentDim] %= shape[currentDim];
                                     }
-                                    String subDimBandName = subDimBandNameBuilder.toString();
-                                    subDimBandName += BASE_NAMES.getOrDefault(origBandName, bandName);
-                                    band = createBand(subDimBandName, array, additionalIndexes.clone());
-                                    applyBandAttributes(band, bandDescription, arrayAttributes);
-                                    addFlagCoding(band, arrayAttributes);
-                                    addIndexCoding(band);
-                                    addMasks(band);
-                                    resultingBands.add(band);
-                                    int currentDim = numDims - 1;
-                                    while (currentDim >= 0) {
-                                        additionalIndexes[currentDim]++;
-                                        if (currentDim > 0) {
-                                            additionalIndexes[currentDim] %= shape[currentDim];
-                                        }
-                                        if (additionalIndexes[currentDim] > 0) {
-                                            break;
-                                        }
-                                        currentDim--;
+                                    if (additionalIndexes[currentDim] > 0) {
+                                        break;
                                     }
-                                }
-                                if (bandName.contains(QUICKLOOK_BAND_NAME)) {
-                                    Band[] quicklookBands = resultingBands.toArray(new Band[0]);
-                                    Quicklook quicklook = new Quicklook(product, bandName, quicklookBands);
-                                    product.getQuicklookGroup().add(quicklook);
+                                    currentDim--;
                                 }
                             }
+                            if (bandName.contains(QUICKLOOK_BAND_NAME)) {
+                                Band[] quicklookBands = resultingBands.toArray(new Band[0]);
+                                Quicklook quicklook = new Quicklook(product, bandName, quicklookBands);
+                                product.getQuicklookGroup().add(quicklook);
+                            }
+                            bandSet = true;
                         }
                     }
                 }
+                if (!bandSet) {
+                    if (notMetadata.contains(origBandName)) {
+                        continue;
+                    }
+                    // read as metadata
+                    ProductData productData = getProductDataFromKey(arrayKey, "");
+                    String parentName = splitArrayKey[splitArrayKey.length - 2];
+                    int[] arrayShape = array.getShape();
+                    if (!product.getMetadataRoot().containsElement(parentName)) {
+                        product.getMetadataRoot().addElement(new MetadataElement(parentName));
+                    }
+                    MetadataElement parentElement = product.getMetadataRoot().getElement(parentName);
+                    if (arrayShape.length == 1 && arrayShape[0] == 1) {
+                        MetadataAttribute metadataAttribute = createMetadataAttribute(
+                                origBandName, productData.getElemStringAt(0)
+                        );
+                        parentElement.addAttribute(metadataAttribute);
+                        continue;
+                    }
+                    MetadataElement element = new MetadataElement(origBandName);
+                    int count = 0;
+                    for (int i = 0; i < arrayShape[0]; i++) {
+                        String[] dimensionNames = null;
+                        if (dimensionList != null && DIMENSION_NAMES.containsKey(dimensionList.get(0))) {
+                            dimensionNames = DIMENSION_NAMES.get(dimensionList.get(0));
+                        }
+                        if (arrayShape.length > 1) {
+                            MetadataElement innerElement = new MetadataElement(dimensionNames[i]);
+                            String[] innerDimensionNames = null;
+                            if (dimensionList != null && DIMENSION_NAMES.containsKey(dimensionList.get(1))) {
+                                innerDimensionNames = DIMENSION_NAMES.get(dimensionList.get(1));
+                            }
+                            for (int j = 0; j < arrayShape[1]; j++) {
+                                String name = "" + j;
+                                if (innerDimensionNames != null) {
+                                    name = innerDimensionNames[j];
+                                }
+                                MetadataAttribute metadataAttribute = createMetadataAttribute(
+                                        name, productData.getElemStringAt(count++)
+                                );
+                                innerElement.addAttribute(metadataAttribute);
+                            }
+                            element.addElement(innerElement);
+                        } else {
+                            String name = "" + i;
+                            if (dimensionNames != null) {
+                                name = dimensionNames[i];
+                            }
+                            MetadataAttribute metadataAttribute = createMetadataAttribute(
+                                    name, productData.getElemStringAt(count++)
+                            );
+                            element.addAttribute(metadataAttribute);
+                        }
+                    }
+                    parentElement.addElement(element);
+                }
+
             } catch (IllegalArgumentException iae) {
                 // TODO: handle this correctly
                 System.out.println(arrayKey + ": " + iae);
@@ -444,11 +503,24 @@ public class S2ZarrProductReader extends AbstractProductReader {
         ZarrArray coord;
         try {
             coord = rootGroup.openArray(coordKey);
+            int[] shape = coord.getShape();
+            if (shape.length == 0) {
+                ArrayParams params = new ArrayParams();
+                params.byteOrder(coord.getByteOrder());
+                params.dataType(coord.getDataType());
+                params.fillValue(coord.getFillValue());
+                params.shape(1);
+                params.chunks(1);
+                coord = rootGroup.createArray(coordKey, params);
+            }
             final DataType zarrDataType = coord.getDataType();
             int productDataType = getProductDataType(zarrDataType);
-            int numCoordinates = coord.getShape()[0];
+            int numCoordinates = 1;
+            for (int s : shape) {
+                numCoordinates *= s;
+            }
             ProductData productData = ProductData.createInstance(productDataType, numCoordinates);
-            coord.read(productData.getElems(), new int[]{numCoordinates});
+            coord.read(productData.getElems(), shape);
             return productData;
         } catch (IOException | InvalidRangeException e) {
             // TODO handle exception
