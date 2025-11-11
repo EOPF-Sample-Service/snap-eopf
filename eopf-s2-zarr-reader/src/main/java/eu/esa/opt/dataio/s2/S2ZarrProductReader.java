@@ -221,25 +221,30 @@ public class S2ZarrProductReader extends AbstractProductReader {
                 new ArrayList<>(List.of("longitude", "latitude"))
         };
         for (String arrayKey : rootGroup.getArrayKeys()) {
+            ZarrArray array;
             try {
-                ZarrArray array = rootGroup.openArray(arrayKey);
-                Map<String, Object> arrayAttributes = array.getAttributes();
-                if (arrayAttributes.containsKey(ARRAY_DIMENSIONS_ATTRIBUTES_NAME)) {
-                    List<String> dimensionList = cast(arrayAttributes.get(ARRAY_DIMENSIONS_ATTRIBUTES_NAME));
-                    for (List<String> coordinatePair : coordinatePairs) {
-                        if (new HashSet<>(dimensionList).containsAll(coordinatePair)) {
+                array = rootGroup.openArray(arrayKey);
+            } catch (IllegalArgumentException iae) {
+                LOG.warning("Could not read array '" + arrayKey + "'");
+                continue;
+            }
+            Map<String, Object> arrayAttributes = array.getAttributes();
+            if (arrayAttributes.containsKey(ARRAY_DIMENSIONS_ATTRIBUTES_NAME)) {
+                List<String> dimensionList = cast(arrayAttributes.get(ARRAY_DIMENSIONS_ATTRIBUTES_NAME));
+                for (List<String> coordinatePair : coordinatePairs) {
+                    if (new HashSet<>(dimensionList).containsAll(coordinatePair)) {
+                        try {
                             initGeoCoding(array, arrayAttributes, arrayKey, coordinatePair);
+                        } catch (FactoryException | TransformException | InvalidRangeException e) {
+                            throw new IOException("Cannot initialise geocoding", e);
                         }
                     }
                 }
-            } catch (IllegalArgumentException iae) {
-                // TODO: handle this correctly
-                System.out.println(arrayKey + ": " + iae);
             }
         }
     }
 
-    private void setSceneGeoCoding() {
+    private void setSceneGeoCoding() throws IOException {
         Map<String, Object> stac_map;
         try {
             stac_map = S2ZarrUtils.cast(rootGroup.getAttributes().get(S2ZarrConstants.STAC_DISCOVERY_ATTRIBUTES_NAME));
@@ -253,8 +258,8 @@ public class S2ZarrProductReader extends AbstractProductReader {
                     crs, 109800, 109800, easting, northing, 1.0, 1.0, 0.0, 0.0
             );
             product.setSceneGeoCoding(geoCoding);
-        } catch (IOException | FactoryException | TransformException e) {
-            // TODO handle
+        } catch (FactoryException | TransformException e) {
+            throw new IOException("Cannot initialise product geocoding", e);
         }
     }
 
@@ -265,133 +270,137 @@ public class S2ZarrProductReader extends AbstractProductReader {
                 new ArrayList<>(List.of("longitude", "latitude"))
         };
         for (String arrayKey : rootGroup.getArrayKeys()) {
+            ZarrArray array;
             try {
-                ZarrArray array = rootGroup.openArray(arrayKey);
-                String[] splitArrayKey = arrayKey.split("/");
-                String origBandName = splitArrayKey[splitArrayKey.length - 1];
-                String bandName = getBandName(splitArrayKey);
-                Map<?, ?> bandDescription = getBandDescription(productAttributes, origBandName);
-                Map<String, Object> arrayAttributes = array.getAttributes();
-                boolean bandSet = false;
-                List<String> dimensionList = cast(arrayAttributes.get(ARRAY_DIMENSIONS_ATTRIBUTES_NAME));
-                for (List<String> coordinatePair : coordinatePairs) {
-                    if (dimensionList != null && new HashSet<>(dimensionList).containsAll(coordinatePair)) {
-                        int[] shape = array.getShape();
-                        Band band;
-                        if (shape.length == 2) {
-                            band = createBand(bandName, array, new int[0]);
+                array = rootGroup.openArray(arrayKey);
+            } catch (IllegalArgumentException iae) {
+                LOG.warning("Could not read array '" + arrayKey + "'");
+                continue;
+            }
+            String[] splitArrayKey = arrayKey.split("/");
+            String origBandName = splitArrayKey[splitArrayKey.length - 1];
+            String bandName = getBandName(splitArrayKey);
+            Map<?, ?> bandDescription = getBandDescription(productAttributes, origBandName);
+            Map<String, Object> arrayAttributes = array.getAttributes();
+            boolean bandSet = false;
+            List<String> dimensionList = cast(arrayAttributes.get(ARRAY_DIMENSIONS_ATTRIBUTES_NAME));
+            for (List<String> coordinatePair : coordinatePairs) {
+                if (dimensionList != null && new HashSet<>(dimensionList).containsAll(coordinatePair)) {
+                    int[] shape = array.getShape();
+                    Band band;
+                    if (shape.length == 2) {
+                        band = createBand(bandName, array, new int[0]);
+                        applyBandAttributes(band, bandDescription, arrayAttributes);
+                        addFlagCoding(band, arrayAttributes);
+                        addIndexCoding(band);
+                        addMasks(band);
+                        bandSet = true;
+                    } else {
+                        String[][] bandNameParts = BAND_NAME_PARTS.get(origBandName);
+                        int numDims = shape.length - 2;
+                        int[] additionalIndexes = new int[numDims];
+                        ArrayList<Band> resultingBands = new ArrayList<>();
+                        while (additionalIndexes[0] < shape[0]) {
+                            StringBuilder subDimBandNameBuilder = new StringBuilder();
+                            for (int i = 0; i < numDims; i++) {
+                                subDimBandNameBuilder.append(bandNameParts[i][additionalIndexes[i]]).append("_");
+                            }
+                            String subDimBandName = subDimBandNameBuilder.toString();
+                            subDimBandName += BASE_NAMES.getOrDefault(origBandName, bandName);
+                            band = createBand(subDimBandName, array, additionalIndexes.clone());
                             applyBandAttributes(band, bandDescription, arrayAttributes);
                             addFlagCoding(band, arrayAttributes);
                             addIndexCoding(band);
                             addMasks(band);
-                            bandSet = true;
-                        } else {
-                            String[][] bandNameParts = BAND_NAME_PARTS.get(origBandName);
-                            int numDims = shape.length - 2;
-                            int[] additionalIndexes = new int[numDims];
-                            ArrayList<Band> resultingBands = new ArrayList<>();
-                            while (additionalIndexes[0] < shape[0]) {
-                                StringBuilder subDimBandNameBuilder = new StringBuilder();
-                                for (int i = 0; i < numDims; i++) {
-                                    subDimBandNameBuilder.append(bandNameParts[i][additionalIndexes[i]]).append("_");
+                            resultingBands.add(band);
+                            int currentDim = numDims - 1;
+                            while (currentDim >= 0) {
+                                additionalIndexes[currentDim]++;
+                                if (currentDim > 0) {
+                                    additionalIndexes[currentDim] %= shape[currentDim];
                                 }
-                                String subDimBandName = subDimBandNameBuilder.toString();
-                                subDimBandName += BASE_NAMES.getOrDefault(origBandName, bandName);
-                                band = createBand(subDimBandName, array, additionalIndexes.clone());
-                                applyBandAttributes(band, bandDescription, arrayAttributes);
-                                addFlagCoding(band, arrayAttributes);
-                                addIndexCoding(band);
-                                addMasks(band);
-                                resultingBands.add(band);
-                                int currentDim = numDims - 1;
-                                while (currentDim >= 0) {
-                                    additionalIndexes[currentDim]++;
-                                    if (currentDim > 0) {
-                                        additionalIndexes[currentDim] %= shape[currentDim];
-                                    }
-                                    if (additionalIndexes[currentDim] > 0) {
-                                        break;
-                                    }
-                                    currentDim--;
+                                if (additionalIndexes[currentDim] > 0) {
+                                    break;
                                 }
+                                currentDim--;
                             }
-                            if (bandName.contains(QUICKLOOK_BAND_NAME)) {
-                                Band[] quicklookBands = resultingBands.toArray(new Band[0]);
-                                Quicklook quicklook = new Quicklook(product, bandName, quicklookBands);
-                                product.getQuicklookGroup().add(quicklook);
-                            }
-                            bandSet = true;
                         }
+                        if (bandName.contains(QUICKLOOK_BAND_NAME)) {
+                            Band[] quicklookBands = resultingBands.toArray(new Band[0]);
+                            Quicklook quicklook = new Quicklook(product, bandName, quicklookBands);
+                            product.getQuicklookGroup().add(quicklook);
+                        }
+                        bandSet = true;
                     }
                 }
-                if (!bandSet) {
-                    if (notMetadata.contains(origBandName)) {
-                        continue;
+            }
+            if (!bandSet) {
+                if (notMetadata.contains(origBandName)) {
+                    continue;
+                }
+                // read as metadata
+                ProductData productData = null;
+                try {
+                    productData = getProductDataFromKey(arrayKey, "");
+                } catch (InvalidRangeException e) {
+                    LOG.warning("Cannot read '" + origBandName + "' as metadata.");
+                }
+                String parentName = splitArrayKey[splitArrayKey.length - 2];
+                int[] arrayShape = array.getShape();
+                if (!product.getMetadataRoot().containsElement(parentName)) {
+                    product.getMetadataRoot().addElement(new MetadataElement(parentName));
+                }
+                MetadataElement parentElement = product.getMetadataRoot().getElement(parentName);
+                if (arrayShape.length == 1 && arrayShape[0] == 1) {
+                    MetadataAttribute metadataAttribute = createMetadataAttribute(
+                            origBandName, productData.getElemStringAt(0)
+                    );
+                    parentElement.addAttribute(metadataAttribute);
+                    continue;
+                }
+                MetadataElement element = new MetadataElement(origBandName);
+                int count = 0;
+                for (int i = 0; i < arrayShape[0]; i++) {
+                    String[] dimensionNames = null;
+                    if (dimensionList != null && DIMENSION_NAMES.containsKey(dimensionList.get(0))) {
+                        dimensionNames = DIMENSION_NAMES.get(dimensionList.get(0));
                     }
-                    // read as metadata
-                    ProductData productData = getProductDataFromKey(arrayKey, "");
-                    String parentName = splitArrayKey[splitArrayKey.length - 2];
-                    int[] arrayShape = array.getShape();
-                    if (!product.getMetadataRoot().containsElement(parentName)) {
-                        product.getMetadataRoot().addElement(new MetadataElement(parentName));
-                    }
-                    MetadataElement parentElement = product.getMetadataRoot().getElement(parentName);
-                    if (arrayShape.length == 1 && arrayShape[0] == 1) {
-                        MetadataAttribute metadataAttribute = createMetadataAttribute(
-                                origBandName, productData.getElemStringAt(0)
-                        );
-                        parentElement.addAttribute(metadataAttribute);
-                        continue;
-                    }
-                    MetadataElement element = new MetadataElement(origBandName);
-                    int count = 0;
-                    for (int i = 0; i < arrayShape[0]; i++) {
-                        String[] dimensionNames = null;
-                        if (dimensionList != null && DIMENSION_NAMES.containsKey(dimensionList.get(0))) {
-                            dimensionNames = DIMENSION_NAMES.get(dimensionList.get(0));
+                    if (arrayShape.length > 1) {
+                        MetadataElement innerElement = new MetadataElement(dimensionNames[i]);
+                        String[] innerDimensionNames = null;
+                        if (dimensionList != null && DIMENSION_NAMES.containsKey(dimensionList.get(1))) {
+                            innerDimensionNames = DIMENSION_NAMES.get(dimensionList.get(1));
                         }
-                        if (arrayShape.length > 1) {
-                            MetadataElement innerElement = new MetadataElement(dimensionNames[i]);
-                            String[] innerDimensionNames = null;
-                            if (dimensionList != null && DIMENSION_NAMES.containsKey(dimensionList.get(1))) {
-                                innerDimensionNames = DIMENSION_NAMES.get(dimensionList.get(1));
-                            }
-                            for (int j = 0; j < arrayShape[1]; j++) {
-                                String name = "" + j;
-                                if (innerDimensionNames != null) {
-                                    name = innerDimensionNames[j];
-                                }
-                                MetadataAttribute metadataAttribute = createMetadataAttribute(
-                                        name, productData.getElemStringAt(count++)
-                                );
-                                innerElement.addAttribute(metadataAttribute);
-                            }
-                            element.addElement(innerElement);
-                        } else {
-                            String name = "" + i;
-                            if (dimensionNames != null) {
-                                name = dimensionNames[i];
+                        for (int j = 0; j < arrayShape[1]; j++) {
+                            String name = "" + j;
+                            if (innerDimensionNames != null) {
+                                name = innerDimensionNames[j];
                             }
                             MetadataAttribute metadataAttribute = createMetadataAttribute(
                                     name, productData.getElemStringAt(count++)
                             );
-                            element.addAttribute(metadataAttribute);
+                            innerElement.addAttribute(metadataAttribute);
                         }
+                        element.addElement(innerElement);
+                    } else {
+                        String name = "" + i;
+                        if (dimensionNames != null) {
+                            name = dimensionNames[i];
+                        }
+                        MetadataAttribute metadataAttribute = createMetadataAttribute(
+                                name, productData.getElemStringAt(count++)
+                        );
+                        element.addAttribute(metadataAttribute);
                     }
-                    parentElement.addElement(element);
                 }
-
-            } catch (IllegalArgumentException iae) {
-                // TODO: handle this correctly
-                System.out.println(arrayKey + ": " + iae);
+                parentElement.addElement(element);
             }
         }
     }
 
     private void initGeoCoding(
-            ZarrArray array, Map<String, Object> arrayAttributes,
-            String arrayKey, List<String> coordinatePair
-    ) throws IOException {
+            ZarrArray array, Map<String, Object> arrayAttributes, String arrayKey, List<String> coordinatePair
+    ) throws FactoryException, TransformException, IOException, InvalidRangeException {
         int[] arrayShape = array.getShape();
         int[] shape = new int[]{arrayShape[arrayShape.length - 2], arrayShape[arrayShape.length - 1]};
         String shapeString = shape[0] + "_" + shape[1];
@@ -401,47 +410,35 @@ public class S2ZarrProductReader extends AbstractProductReader {
                     arrayAttributes, TRANSFORM_ATTRIBUTES_NAME)
             );
             if (crs_wkt != null && transform != null) {
-                try {
-                    CoordinateReferenceSystem crs = CRS.parseWKT(crs_wkt);
-                    double pixelSizeX = Math.abs(transform.get(0).doubleValue());
-                    double easting = transform.get(2).doubleValue();
-                    double pixelSizeY = Math.abs(transform.get(4).doubleValue());
-                    double northing = transform.get(5).doubleValue();
-                    CrsGeoCoding crsGeoCoding = new CrsGeoCoding(
-                            crs, shape[0], shape[1], easting, northing, pixelSizeX, pixelSizeY
-                    );
-                    geoCodings.put(shapeString, crsGeoCoding);
-                } catch (FactoryException | TransformException e) {
-                    // TODO handling
-                }
+                CoordinateReferenceSystem crs = CRS.parseWKT(crs_wkt);
+                double pixelSizeX = Math.abs(transform.get(0).doubleValue());
+                double easting = transform.get(2).doubleValue();
+                double pixelSizeY = Math.abs(transform.get(4).doubleValue());
+                double northing = transform.get(5).doubleValue();
+                CrsGeoCoding crsGeoCoding = new CrsGeoCoding(
+                        crs, shape[0], shape[1], easting, northing, pixelSizeX, pixelSizeY
+                );
+                geoCodings.put(shapeString, crsGeoCoding);
             } else if (coordinatePair.contains("x")) {
-                try {
-                    Map<String, Object> stac_map = cast(rootGroup.getAttributes().get(STAC_DISCOVERY_ATTRIBUTES_NAME));
-                    Map<String, Object> propertiesMap = cast(stac_map.get(PROPERTIES_ATTRIBUTES_NAME));
-                    int epsg_code = cast(propertiesMap.get("proj:epsg"));
-                    CoordinateReferenceSystem crs = CRS.decode("EPSG:" + epsg_code);
-                    String newKey = arrayKey.substring(0,arrayKey.lastIndexOf("/"));
-                    ProductData xCoordData = getProductDataFromKey(newKey, "x");
-                    int firstX = xCoordData.getElemIntAt(0);
-                    int secondX = xCoordData.getElemIntAt(1);
-                    int pixelSizeX = secondX - firstX;
-                    int easting = firstX - (pixelSizeX / 2);
-                    ProductData yCoordData = getProductDataFromKey(newKey, "y");
-                    int firstY = yCoordData.getElemIntAt(0);
-                    int secondY = yCoordData.getElemIntAt(1);
-                    int pixelSizeY = firstY - secondY;
-                    int northing = firstY + (pixelSizeY / 2);
-                    try {
-                        CrsGeoCoding crsGeoCoding = new CrsGeoCoding(
-                                crs, shape[0], shape[1], easting, northing, pixelSizeX, pixelSizeY
-                        );
-                        geoCodings.put(shapeString, crsGeoCoding);
-                    } catch (TransformException e) {
-                        // TODO handle
-                    }
-                } catch (FactoryException fe) {
-                    // TODO handle
-                }
+                Map<String, Object> stac_map = cast(rootGroup.getAttributes().get(STAC_DISCOVERY_ATTRIBUTES_NAME));
+                Map<String, Object> propertiesMap = cast(stac_map.get(PROPERTIES_ATTRIBUTES_NAME));
+                int epsg_code = cast(propertiesMap.get("proj:epsg"));
+                CoordinateReferenceSystem crs = CRS.decode("EPSG:" + epsg_code);
+                String newKey = arrayKey.substring(0,arrayKey.lastIndexOf("/"));
+                ProductData xCoordData = getProductDataFromKey(newKey, "x");
+                int firstX = xCoordData.getElemIntAt(0);
+                int secondX = xCoordData.getElemIntAt(1);
+                int pixelSizeX = secondX - firstX;
+                int easting = firstX - (pixelSizeX / 2);
+                ProductData yCoordData = getProductDataFromKey(newKey, "y");
+                int firstY = yCoordData.getElemIntAt(0);
+                int secondY = yCoordData.getElemIntAt(1);
+                int pixelSizeY = firstY - secondY;
+                int northing = firstY + (pixelSizeY / 2);
+                CrsGeoCoding crsGeoCoding = new CrsGeoCoding(
+                        crs, shape[0], shape[1], easting, northing, pixelSizeX, pixelSizeY
+                );
+                geoCodings.put(shapeString, crsGeoCoding);
             } else {
                 String newKey = arrayKey.substring(0,arrayKey.lastIndexOf("/"));
                 Band[] coordinateBands = new Band[2];
@@ -452,32 +449,27 @@ public class S2ZarrProductReader extends AbstractProductReader {
                     String coordinateName = coordinatePair.get(k);
                     String coordKey = newKey + "/" + coordinateName;
                     ZarrArray coord = rootGroup.openArray(coordKey);
-                    try {
-                        final DataType zarrDataType = coord.getDataType();
-                        int productDataType = getProductDataType(zarrDataType);
-                        numCoordinates = coord.getShape()[0];
-                        coordinateValues[k] = new double[numCoordinates * numCoordinates];
-                        ProductData productData = ProductData.createInstance(productDataType, numCoordinates);
-                        coord.read(productData.getElems(), new int[]{numCoordinates});
-                        String bandName = getBandName(coordKey.split("/"));
-                        Band coordBand = new Band(bandName, productDataType, numCoordinates, numCoordinates);
-                        coordBand.ensureRasterData();
-                        for (int i = 0; i < numCoordinates; i++) {
-                            for (int j = 0; j < numCoordinates; j++) {
-                                    if (k == 0) {
-                                        coordBand.setPixelDouble(i, j, productData.getElemDoubleAt(j));
-                                        coordinateValues[k][count++] = productData.getElemDoubleAt(j);
-                                    } else {
-                                        coordBand.setPixelDouble(i, j, productData.getElemDoubleAt(i));
-                                        coordinateValues[k][count++] = productData.getElemDoubleAt(i);
-                                    }
+                    final DataType zarrDataType = coord.getDataType();
+                    int productDataType = getProductDataType(zarrDataType);
+                    numCoordinates = coord.getShape()[0];
+                    coordinateValues[k] = new double[numCoordinates * numCoordinates];
+                    ProductData productData = ProductData.createInstance(productDataType, numCoordinates);
+                    coord.read(productData.getElems(), new int[]{numCoordinates});
+                    String bandName = getBandName(coordKey.split("/"));
+                    Band coordBand = new Band(bandName, productDataType, numCoordinates, numCoordinates);
+                    coordBand.ensureRasterData();
+                    for (int i = 0; i < numCoordinates; i++) {
+                        for (int j = 0; j < numCoordinates; j++) {
+                            if (k == 0) {
+                                coordBand.setPixelDouble(i, j, productData.getElemDoubleAt(j));
+                                coordinateValues[k][count++] = productData.getElemDoubleAt(j);
+                            } else {
+                                coordBand.setPixelDouble(i, j, productData.getElemDoubleAt(i));
+                                coordinateValues[k][count++] = productData.getElemDoubleAt(i);
                             }
                         }
-                        coordinateBands[k] = coordBand;
-                    } catch (InvalidRangeException e) {
-                        // TODO handle
-                        throw new RuntimeException(e);
                     }
+                    coordinateBands[k] = coordBand;
                 }
                 double resolutionInKm = RasterUtils.computeResolutionInKm(
                         coordinateValues[0], coordinateValues[1], shape[0], shape[1]
@@ -498,38 +490,34 @@ public class S2ZarrProductReader extends AbstractProductReader {
         }
     }
 
-    private ProductData getProductDataFromKey(String newKey, String coordName) {
+    private ProductData getProductDataFromKey(
+            String newKey, String coordName
+    ) throws IOException, InvalidRangeException {
         String coordKey = newKey + "/" + coordName;
-        ZarrArray coord;
-        try {
-            coord = rootGroup.openArray(coordKey);
-            int[] shape = coord.getShape();
-            if (shape.length == 0) {
-                ArrayParams params = new ArrayParams();
-                params.byteOrder(coord.getByteOrder());
-                params.dataType(coord.getDataType());
-                params.fillValue(coord.getFillValue());
-                params.shape(1);
-                params.chunks(1);
-                coord = rootGroup.createArray(coordKey, params);
-            }
-            final DataType zarrDataType = coord.getDataType();
-            int productDataType = getProductDataType(zarrDataType);
-            int numCoordinates = 1;
-            for (int s : shape) {
-                numCoordinates *= s;
-            }
-            ProductData productData = ProductData.createInstance(productDataType, numCoordinates);
-            coord.read(productData.getElems(), shape);
-            return productData;
-        } catch (IOException | InvalidRangeException e) {
-            // TODO handle exception
+        ZarrArray coord = rootGroup.openArray(coordKey);
+        int[] shape = coord.getShape();
+        if (shape.length == 0) {
+            ArrayParams params = new ArrayParams();
+            params.byteOrder(coord.getByteOrder());
+            params.dataType(coord.getDataType());
+            params.fillValue(coord.getFillValue());
+            params.shape(1);
+            params.chunks(1);
+            coord = rootGroup.createArray(coordKey, params);
         }
-        return null;
+        final DataType zarrDataType = coord.getDataType();
+        int productDataType = getProductDataType(zarrDataType);
+        int numCoordinates = 1;
+        for (int s : shape) {
+            numCoordinates *= s;
+        }
+        ProductData productData = ProductData.createInstance(productDataType, numCoordinates);
+        coord.read(productData.getElems(), shape);
+        return productData;
     }
 
 
-        private void addFlagCoding(Band band, Map<String, Object> attributes) {
+    private void addFlagCoding(Band band, Map<String, Object> attributes) {
         final String rasterName = band.getName();
         final List<String> flagMeanings = cast(attributes.get(FLAG_MEANINGS));
         if (flagMeanings != null) {
