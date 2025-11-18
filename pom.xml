@@ -41,7 +41,7 @@
     <packaging>pom</packaging>
 
     <properties>
-        <snap.version>14.0.0-SNAPSHOT</snap.version>
+        <snap.version>13.0.0</snap.version>
         <eopfreader.version>1.0.0-SNAPSHOT</eopfreader.version>
         <seadas.reader.version>1.10.2</seadas.reader.version>
         <seadas.reader.ui.version>1.10.2</seadas.reader.ui.version>
