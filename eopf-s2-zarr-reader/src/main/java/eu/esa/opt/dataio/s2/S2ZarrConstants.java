@@ -10,7 +10,7 @@ final class S2ZarrConstants {
 
     static final String AUTO_GROUPING =
             "atmosphere:cams:classification:detector_footprint:ecmwf:geometry:probability:quicklook:" +
-            "r10m_mask:r10m_reflectance:r20m_mask:r20m_reflectance:r60m_mask:r60m_reflectance";
+            "mask:reflectance";
     static final String ZARR_FILE_EXTENSION = ".zarr";
     static final String FORMAT_NAME = "Sentinel-2 ZARR Multi-Res";
     static final Class<?>[] IO_TYPES = new Class[]{
