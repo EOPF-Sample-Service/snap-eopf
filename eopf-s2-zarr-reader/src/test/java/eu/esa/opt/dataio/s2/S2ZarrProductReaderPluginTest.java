@@ -25,7 +25,7 @@ public class S2ZarrProductReaderPluginTest {
 
     @Test
     public void testGetDefaultFileExtensions() {
-        Assert.assertArrayEquals(new String[]{".zarr"}, plugin.getDefaultFileExtensions());
+        Assert.assertArrayEquals(new String[]{".zarr", ".zarr.zip"}, plugin.getDefaultFileExtensions());
     }
 
     @Test

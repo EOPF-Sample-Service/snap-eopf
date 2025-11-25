@@ -12,6 +12,7 @@ final class S2ZarrConstants {
             "atmosphere:cams:classification:detector_footprint:ecmwf:geometry:probability:quicklook:" +
             "mask:reflectance";
     static final String ZARR_FILE_EXTENSION = ".zarr";
+    static final String ZIP_CONTAINER_EXTENSION = ".zarr.zip";
     static final String FORMAT_NAME = "Sentinel-2 ZARR Multi-Res";
     static final Class<?>[] IO_TYPES = new Class[]{
             Path.class,
@@ -35,6 +36,7 @@ final class S2ZarrConstants {
     static final String ARRAY_DIMENSIONS_ATTRIBUTES_NAME = "_ARRAY_DIMENSIONS";
     static final String BBOX_ATTRIBUTES_NAME = "proj:bbox";
     static final String EPSG_ATTRIBUTES_NAME = "proj:epsg";
+    static final String HORIZONTAL_EPSG_ATTRIBUTES_NAME = "horizontal_CRS_code";
     static final String WKT_ATTRIBUTES_NAME = "proj:wkt2";
     static final String TRANSFORM_ATTRIBUTES_NAME = "proj:transform";
     static final String OTHER_METADATA_ATTRIBUTES_NAME = "other_metadata";
@@ -82,6 +84,7 @@ final class S2ZarrConstants {
 
     static final Map<String, String> BAND_NAME_TO_FLAG_CODING_NAME = Map.of(
             "l1c_classification", "l1c_classification",
+            "l2a_classification", "l2a_classification",
             "mask", "quality"
     );
 

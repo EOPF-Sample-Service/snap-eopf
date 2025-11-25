@@ -9,11 +9,13 @@ import static com.bc.zarr.ZarrConstants.*;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.FileVisitOption;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
+import java.util.TreeSet;
 import java.util.stream.Stream;
 
 import static eu.esa.opt.dataio.s2.S2ZarrConstants.*;
@@ -29,7 +31,7 @@ public class S2ZarrProductReaderPlugin implements ProductReaderPlugIn  {
         }
         final Path productRoot;
         final String lowerName = inputPath.getFileName().toString().toLowerCase();
-        if (lowerName.endsWith(ZARR_FILE_EXTENSION)) {
+        if (lowerName.endsWith(ZIP_CONTAINER_EXTENSION) || lowerName.endsWith(ZARR_FILE_EXTENSION)) {
             productRoot = inputPath;
         } else {
             productRoot = inputPath.getParent();
@@ -57,6 +59,21 @@ public class S2ZarrProductReaderPlugin implements ProductReaderPlugIn  {
                 }
             }
         }
+        final boolean isValidZipArchiveName = productRootName != null && productRootName.toString().toLowerCase().endsWith(ZIP_CONTAINER_EXTENSION);
+        if (isValidZipArchiveName) {
+            try (ZarrZipStore zipStore = new ZarrZipStore(productRoot)) {
+                final InputStream productHeaderStream = zipStore.getInputStream(FILENAME_DOT_ZGROUP);
+                final boolean productHeaderExist = productHeaderStream != null;
+                if (productHeaderExist) {
+                    final TreeSet<String> arrayKeys = zipStore.getArrayKeys();
+                    if (arrayKeys.size() > 0) {
+                        return DecodeQualification.INTENDED;
+                    }
+                }
+            } catch (IOException e) {
+                return DecodeQualification.UNABLE;
+            }
+        }
         return DecodeQualification.UNABLE;
     }
 
@@ -77,7 +94,7 @@ public class S2ZarrProductReaderPlugin implements ProductReaderPlugIn  {
 
     @Override
     public String[] getDefaultFileExtensions() {
-        return new String[]{ZARR_FILE_EXTENSION};
+        return new String[]{ZARR_FILE_EXTENSION, ZIP_CONTAINER_EXTENSION};
     }
 
     @Override

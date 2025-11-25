@@ -9,6 +9,7 @@ import com.bc.zarr.DataType;
 import com.bc.zarr.ZarrArray;
 import com.bc.zarr.ZarrGroup;
 import com.bc.zarr.storage.FileSystemStore;
+import com.bc.zarr.storage.Store;
 import org.esa.snap.core.dataio.AbstractProductReader;
 import org.esa.snap.core.dataio.ProductReaderPlugIn;
 import org.esa.snap.core.dataio.geocoding.*;
@@ -31,8 +32,12 @@ import java.awt.*;
 import java.awt.geom.AffineTransform;
 import java.awt.image.RenderedImage;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.text.ParseException;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoField;
 import java.util.*;
 import java.util.List;
 
@@ -65,14 +70,19 @@ public class S2ZarrProductReader extends AbstractProductReader {
         final String lowerName = fileName.toLowerCase();
         final String productType = getProductType(fileName);
 
-        if (lowerName.endsWith(ZARR_FILE_EXTENSION)) {
+        if (lowerName.endsWith(ZIP_CONTAINER_EXTENSION) || lowerName.endsWith(ZARR_FILE_EXTENSION)) {
             rootPath = inputPath;
             fileName = fileName.substring(0, fileName.length() - ZARR_FILE_EXTENSION.length());
         } else {
             rootPath = inputPath.getParent();
         }
         assert rootPath != null;
-        FileSystemStore store = new FileSystemStore(rootPath);
+        Store store;
+        if (Files.isRegularFile(rootPath)) {
+            store = new ZarrZipStore(rootPath);
+        } else {
+            store = new FileSystemStore(rootPath);
+        }
         rootGroup = ZarrGroup.open(store);
         final Map<String, Object> productAttributes = rootGroup.getAttributes();
 
@@ -84,8 +94,8 @@ public class S2ZarrProductReader extends AbstractProductReader {
         product.setEndTime(sensingStop);
         product.setAutoGrouping(AUTO_GROUPING);
         readMetadata();
-        setSceneGeoCoding();
         initGeoCodings();
+        setSceneGeoCoding();
         readArraysAsBandsOrMetadata(productAttributes);
         registerRGBProfiles();
         product.setFileLocation(rootPath.toFile());
@@ -147,11 +157,10 @@ public class S2ZarrProductReader extends AbstractProductReader {
                             timeString.substring(plusIndex + 4);
                 }
                 return ISO8601Converter.parse(timeString);
-            } catch (ParseException e) {
-                throw new IOException(
-                        "Unparseable " + timeAttributeName + " while reading product '" + rootPath.toString() + "'",
-                        e
-                );
+            } catch (ParseException | DateTimeParseException e) {
+                Instant instant = Instant.parse(timeString);
+                Date date = Date.from(instant);
+                return ProductData.UTC.create(date, instant.get(ChronoField.MICRO_OF_SECOND));
             }
         }
         return null;
@@ -244,16 +253,45 @@ public class S2ZarrProductReader extends AbstractProductReader {
         }
     }
 
-    private void setSceneGeoCoding() throws IOException {
-        Map<String, Object> stac_map;
-        try {
-            stac_map = S2ZarrUtils.cast(rootGroup.getAttributes().get(S2ZarrConstants.STAC_DISCOVERY_ATTRIBUTES_NAME));
-            Map<String, Object> propertiesMap = cast(stac_map.get(PROPERTIES_ATTRIBUTES_NAME));
+    private CoordinateReferenceSystem getProductCrs() throws IOException, FactoryException {
+        Map<String, Object> stac_map = S2ZarrUtils.cast(
+                rootGroup.getAttributes().get(S2ZarrConstants.STAC_DISCOVERY_ATTRIBUTES_NAME)
+        );
+        String epsg;
+        Map<String, Object> propertiesMap = cast(stac_map.get(PROPERTIES_ATTRIBUTES_NAME));
+        if (propertiesMap.containsKey(EPSG_ATTRIBUTES_NAME)) {
             int epsg_code = cast(propertiesMap.get(EPSG_ATTRIBUTES_NAME));
-            CoordinateReferenceSystem crs = CRS.decode("EPSG:" + epsg_code);
-            ArrayList<Double> bbox  = cast(propertiesMap.get(BBOX_ATTRIBUTES_NAME));
-            double easting = bbox.get(0);
-            double northing = bbox.get(3);
+            epsg = "EPSG:" + epsg_code;
+        } else {
+            Map<String, Object> other_metadata_map = S2ZarrUtils.cast(
+                    rootGroup.getAttributes().get(OTHER_METADATA_ATTRIBUTES_NAME)
+            );
+            epsg = cast(other_metadata_map.get(HORIZONTAL_EPSG_ATTRIBUTES_NAME));
+        }
+        return CRS.decode(epsg);
+    }
+
+    private void setSceneGeoCoding() throws IOException {
+        try {
+            CoordinateReferenceSystem crs = getProductCrs();
+            Map<String, Object> stac_map = S2ZarrUtils.cast(
+                    rootGroup.getAttributes().get(S2ZarrConstants.STAC_DISCOVERY_ATTRIBUTES_NAME)
+            );
+            Map<String, Object> propertiesMap = cast(stac_map.get(PROPERTIES_ATTRIBUTES_NAME));
+            double easting = 0.0;
+            double northing = 3.0;
+            if (propertiesMap.containsKey(BBOX_ATTRIBUTES_NAME)) {
+                ArrayList<Double> bbox  = cast(propertiesMap.get(BBOX_ATTRIBUTES_NAME));
+                easting = bbox.get(0);
+                northing = bbox.get(3);
+            } else {
+                CrsGeoCoding bandGeoCoding = (CrsGeoCoding) geoCodings.get("10980_10980");
+                AffineTransform2D i2m = (AffineTransform2D) bandGeoCoding.getImageToMapTransform();
+                double translateX = i2m.getTranslateX();
+                double translateY = i2m.getTranslateY();
+                easting = translateX + 5.0;
+                northing = translateY - 5.0;
+            }
             GeoCoding geoCoding = new CrsGeoCoding(
                     crs, 109800, 109800, easting, northing, 1.0, 1.0, 0.0, 0.0
             );
@@ -420,10 +458,7 @@ public class S2ZarrProductReader extends AbstractProductReader {
                 );
                 geoCodings.put(shapeString, crsGeoCoding);
             } else if (coordinatePair.contains("x")) {
-                Map<String, Object> stac_map = cast(rootGroup.getAttributes().get(STAC_DISCOVERY_ATTRIBUTES_NAME));
-                Map<String, Object> propertiesMap = cast(stac_map.get(PROPERTIES_ATTRIBUTES_NAME));
-                int epsg_code = cast(propertiesMap.get("proj:epsg"));
-                CoordinateReferenceSystem crs = CRS.decode("EPSG:" + epsg_code);
+                CoordinateReferenceSystem crs = getProductCrs();
                 String newKey = arrayKey.substring(0,arrayKey.lastIndexOf("/"));
                 ProductData xCoordData = getProductDataFromKey(newKey, "x");
                 int firstX = xCoordData.getElemIntAt(0);
@@ -520,7 +555,12 @@ public class S2ZarrProductReader extends AbstractProductReader {
 
     private void addFlagCoding(Band band, Map<String, Object> attributes) {
         final String rasterName = band.getName();
-        final List<String> flagMeanings = cast(attributes.get(FLAG_MEANINGS));
+        List<String> flagMeanings;
+        try {
+            flagMeanings = cast(attributes.get(FLAG_MEANINGS));
+        } catch (ClassCastException cce) {
+            flagMeanings = List.of(attributes.get(FLAG_MEANINGS).toString().split(" "));
+        }
         if (flagMeanings != null) {
             String flagCodingName = null;
             for (Map.Entry<String, String> bandNameToFlagEntry : BAND_NAME_TO_FLAG_CODING_NAME.entrySet()) {
@@ -545,7 +585,12 @@ public class S2ZarrProductReader extends AbstractProductReader {
 
     private static FlagCoding createFlagCoding(Band band, Map<String, Object> attributes, String flagCodingName) {
         String rasterName = band.getName();
-        final List<String> flagMeanings = cast(attributes.get(FLAG_MEANINGS));
+        List<String> flagMeanings;
+        try {
+            flagMeanings = cast(attributes.get(FLAG_MEANINGS));
+        } catch (ClassCastException cce) {
+            flagMeanings = List.of(attributes.get(FLAG_MEANINGS).toString().split(" "));
+        }
         final List<Number> flagMasks = cast(attributes.get(FLAG_MASKS));
 
         FlagCoding flagCoding;
@@ -647,8 +692,11 @@ public class S2ZarrProductReader extends AbstractProductReader {
         Map<String, Object> otherMetadataAttributes = cast(productAttributes.get(OTHER_METADATA_ATTRIBUTES_NAME));
         if (otherMetadataAttributes.containsKey(BAND_DESCRIPTION_ATTRIBUTES_NAME)) {
             Map<String, Object> bandDescription = cast(otherMetadataAttributes.get(BAND_DESCRIPTION_ATTRIBUTES_NAME));
-            if (bandDescription.containsKey(bandName)) {
-                return cast(bandDescription.get(bandName));
+            if (bandName.startsWith("b")) {
+                String bandKey = bandName.substring(1).toUpperCase();
+                if (bandDescription.containsKey(bandKey)) {
+                    return cast(bandDescription.get(bandKey));
+                }
             }
         }
         return null;
@@ -706,7 +754,12 @@ public class S2ZarrProductReader extends AbstractProductReader {
     void applyBandAttributes(Band band, Map<?, ?> bandDescription, Map<String, Object> arrayAttributes) {
         if (bandDescription != null) {
             if (bandDescription.containsKey(BANDWITH_ATTRIBUTES_NAME)) {
-                Number bandwidth = (Number) bandDescription.get(BANDWITH_ATTRIBUTES_NAME);
+                Number bandwidth;
+                try {
+                    bandwidth = (Number) bandDescription.get(BANDWITH_ATTRIBUTES_NAME);
+                } catch (ClassCastException cce) {
+                    bandwidth = Float.parseFloat(bandDescription.get(BANDWITH_ATTRIBUTES_NAME).toString());
+                }
                 band.setSpectralBandwidth(bandwidth.floatValue());
             }
             if (bandDescription.containsKey(CENTRAL_WAVELENGTH_ATTRIBUTES_NAME)) {

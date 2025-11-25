@@ -6,7 +6,6 @@
         <groupId>eu.esa.opt</groupId>
         <artifactId>snap-eopf</artifactId>
         <version>1.0.0-SNAPSHOT</version>
-<!--        <relativePath>../pom.xml</relativePath>-->
     </parent>
 
     <artifactId>eopf-s2-zarr-reader</artifactId>
@@ -40,10 +39,6 @@
             <groupId>org.esa.snap</groupId>
             <artifactId>snap-runtime</artifactId>
         </dependency>
-<!--        <dependency>-->
-<!--            <groupId>org.esa.snap</groupId>-->
-<!--            <artifactId>snap-znap</artifactId>-->
-<!--        </dependency>-->
         <dependency>
             <groupId>javax.media.jai</groupId>
             <artifactId>jai-core-openjdk</artifactId>
