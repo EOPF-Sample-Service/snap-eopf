@@ -21,7 +21,7 @@
 
     <groupId>eu.esa.opt</groupId>
     <artifactId>snap-eopf</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1-SNAPSHOT</version>
     <name>EOPF SNAP Extensions</name>
     <description>EOPF Extensions for SNAP</description>
 <!--    <url>https://sentinel.esa.int/web/sentinel/toolboxes/optical</url>-->
@@ -42,7 +42,7 @@
 
     <properties>
         <snap.version>13.0.0</snap.version>
-        <eopfreader.version>1.0.0</eopfreader.version>
+        <eopfreader.version>1.0.1-SNAPSHOT</eopfreader.version>
         <snap-help-system.version>1.0.2</snap-help-system.version>
         <netbeans.version>RELEASE210</netbeans.version>
         <geotools.version>28.6</geotools.version>
