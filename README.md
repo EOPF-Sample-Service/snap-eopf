@@ -15,16 +15,32 @@ between the EOPF Zarr format and the SNAP processing ecosystem.
 
 ### Install SNAP
 
-Download and install **SNAP version 13** using the official installation guide:
+Download and install **SNAP version 13** following the official instructions provided by:
 https://step.esa.int/main/download/snap-download/
 
+After installation, start SNAP to proceed with plugin installation.
+
+---
 
 ## Install the EOPF Sentinel-2 L2A Zarr Prototype Reader
 
-> **Note:**
-> The installation instructions for this plugin will be added soon.
+The **EOPF Sentinel-2 L2A Zarr Prototype Reader** is distributed as a **SNAP Community Plugin**.
+
+To install it:
+
+1. Open SNAP.
+2. Go to **Tools → Plugins**.
+3. Select the **Available Plugins** tab.
+   You will see a window similar to the one shown below:
+
+   ![SNAP select plugin](imgs/snap_select_plugin.png)
+
+4. Locate **EOPF S2 Zarr Reader** in the list.
+5. Check the box and click **Install**.
+6. Follow the prompts and restart SNAP if prompted.
 
 ---
+
 
 ## Using the EOPF Sentinel-2 L2A Zarr Prototype Reader
 
